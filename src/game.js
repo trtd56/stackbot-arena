@@ -66,7 +66,7 @@
   // ---------------- 入力 ----------------
   // キーボードだけで遊ぶ。照準 = 機体の向き（+ 前方の狭い範囲の敵へ軽く吸い付く）
   const keys = new Set();
-  const GAME_KEYS = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyZ', 'KeyX'];
+  const GAME_KEYS = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyZ', 'KeyX', 'KeyC'];
   addEventListener('keydown', (e) => {
     initAudio();
     if (GAME_KEYS.includes(e.code)) e.preventDefault();
@@ -74,6 +74,7 @@
     if (e.repeat) return;
     if (e.code === 'KeyX' || e.code === 'Space') wantDash = true;
     if (e.code === 'KeyM') muted = !muted;
+    if (e.code === 'KeyC') setView(viewIdx + 1);
     if ((e.code === 'KeyR' || e.code === 'Enter') && mode === 'over') startGame();
     if (e.code === 'Enter' && mode === 'title') startGame();
   });
@@ -114,15 +115,40 @@
     $('over').hidden = true;
   }
 
-  // ---------------- 座標変換 ----------------
-  function camCenter() { return [VW / 2, VH * 0.56]; }
+  // ---------------- 視点と座標変換 ----------------
+  // 視点は「床をどれだけ縦に縮めるか（k）」「高さ 1 あたり何 px 持ち上げるか（L）」「拡大率（Z）」「自機を画面のどの高さに置くか（cy）」で決まる。
+  // k = 1, L = 1 が真上からの俯瞰。k を小さくすると床が寝て、後ろ上から斜めに見下ろす形になる（正射影のまま。遠近は付けない）。
+  // follow の視点は、カメラが自機の背中側へ回り込み、機体の前方が常に画面の上になる。
+  const VIEWS = [
+    { id: 'top', name: '俯瞰', k: 1, L: 1, Z: 1, cy: 0.56, follow: false },
+    { id: 'chase', name: '後ろ上', k: 0.56, L: 1.2, Z: 1.2, cy: 0.7, follow: true },
+    { id: 'low', name: '低い後ろ（試作）', k: 0.3, L: 1.35, Z: 1.55, cy: 0.8, follow: true },
+  ];
+  let viewIdx = 0;
+  try { viewIdx = clamp(+localStorage.getItem('stackbot-view') || 0, 0, VIEWS.length - 1); } catch (e) { /* 保存できない環境 */ }
+  if (params.has('view')) viewIdx = clamp(VIEWS.findIndex((v) => v.id === params.get('view')), 0, VIEWS.length - 1);
+  const view = { ...VIEWS[viewIdx] };   // いまの値（切り替え時はなめらかに近づける）
+  let viewBanner = 0;
+  function setView(i) {
+    viewIdx = (i + VIEWS.length) % VIEWS.length; viewBanner = 1.6;
+    try { localStorage.setItem('stackbot-view', String(viewIdx)); } catch (e) { /* 無視 */ }
+  }
+  function updateView(dt) {
+    const T = VIEWS[viewIdx], k = Math.min(1, dt * 6);
+    for (const f of ['k', 'L', 'Z', 'cy']) view[f] += (T[f] - view[f]) * k;
+    view.follow = T.follow;
+    viewBanner = Math.max(0, viewBanner - dt);
+  }
+  function camCenter() { return [VW / 2, VH * view.cy]; }
   function toScreen(wx, wy) {
     const [cx, cy] = camCenter(), dx = wx - cam.x, dy = wy - cam.y, c = Math.cos(cam.a), s = Math.sin(cam.a);
-    return [cx + dx * c + dy * s, cy - dx * s + dy * c];
+    return [cx + (dx * c + dy * s) * view.Z, cy + (-dx * s + dy * c) * view.Z * view.k];
   }
+  const up = (z) => z * view.Z * view.L;   // 高さ z（ワールドの px）を画面の持ち上げ量へ
   function worldTransform(lift = 0) {
     const [cx, cy] = camCenter();
-    ctx.setTransform(1, 0, 0, 1, cx, cy - lift);
+    ctx.setTransform(1, 0, 0, 1, cx, cy - up(lift));
+    ctx.scale(view.Z, view.Z * view.k);
     ctx.rotate(-cam.a);
     ctx.translate(-cam.x, -cam.y);
   }
@@ -258,7 +284,16 @@
   }
 
   // 俯瞰: 矢印/WASD は画面の向き基準で移動し、機体は進む方向を向く。Shift を押している間は向きを固定（横歩き・後退撃ち）
+  // 後ろからの視点: ↑↓ で前進・後退、←→ で旋回、Q / E で横歩き（画面の上が常に機体の前）
   function keyControl(p, dt) {
+    if (view.follow) {
+      const fw = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+      const turn = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+      const st = (keys.has('KeyE') ? 1 : 0) - (keys.has('KeyQ') ? 1 : 0);
+      if (p.dashT <= 0) p.a += turn * 2.7 * dt;
+      const c = Math.cos(p.a), s = Math.sin(p.a);
+      return { mx: c * fw - s * st, my: s * fw + c * st, aim: p.a };
+    }
     const ix = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
     const iy = (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0);
     const c = Math.cos(cam.a), s = Math.sin(cam.a);
@@ -273,10 +308,13 @@
     const auto = mode !== 'play';
 
     // カメラ回転（Q/E）
-    if (!auto) {
-      if (keys.has('KeyQ')) cam.a -= 2.2 * dt;
-      if (keys.has('KeyE')) cam.a += 2.2 * dt;
-    } else cam.a += 0.12 * dt;
+    updateView(dt);
+    if (!view.follow) {
+      if (!auto) {
+        if (keys.has('KeyQ')) cam.a -= 2.2 * dt;
+        if (keys.has('KeyE')) cam.a += 2.2 * dt;
+      } else cam.a += 0.12 * dt;
+    }
 
     // ---- 自機 ----
     const p = player;
@@ -478,6 +516,7 @@
     if (particles.length > 900) particles.splice(0, particles.length - 900);
 
     // ---- カメラ ----
+    if (view.follow) cam.a += angDiff(cam.a, p.a + Math.PI / 2) * Math.min(1, dt * 5);  // 機体の前 = 画面の上
     cam.x += (p.x - cam.x) * Math.min(1, dt * 6);
     cam.y += (p.y - cam.y) * Math.min(1, dt * 6);
     shake = Math.max(0, shake - dt * 30);
@@ -534,14 +573,16 @@
     floorCanvas = cv;
   }
 
+  // 断面を下から 1 枚ずつ、回転 → 縦に k 倍 → 高さぶん持ち上げて描く。1 層の持ち上げ量ぶん同じ断面を重ねて隙間を埋める
   function drawStack(model, sx, sy, ang, lift = 0, alpha = 1) {
-    const sl = model.slices, h = model.size / 2, c = Math.cos(ang) * SC, s = Math.sin(ang) * SC;
+    const sl = model.slices, h = model.size / 2, Z = view.Z * SC, k = view.k;
+    const c = Math.cos(ang), s = Math.sin(ang), step = up(SC), n = Math.max(1, Math.ceil(step));
     if (alpha < 1) ctx.globalAlpha = alpha;
     for (let i = 0; i < sl.length; i++) {
       const img = sl[i];
       if (!img) continue;
-      for (let k = 0; k < SC; k++) {
-        ctx.setTransform(c, s, -s, c, sx, sy - lift - (i * SC + k));
+      for (let j = 0; j < n; j++) {
+        ctx.setTransform(c * Z, s * Z * k, -s * Z, c * Z * k, sx, sy - up(lift) - i * step - (j * step) / n);
         ctx.drawImage(img, -h, -h);
       }
     }
@@ -596,14 +637,16 @@
     for (const b of bullets) shadow(b.x, b.y, 3);
 
     // 外周の壁（これも断面の積み重ね）
-    for (let z = 0; z < WALL; z++) {
+    const wallN = Math.ceil(up(WALL));
+    for (let i = 0; i < wallN; i++) {
+      const z = (i / wallN) * WALL, top = i === wallN - 1;
       worldTransform(z);
       const f = 0.55 + 0.45 * z / WALL;
-      ctx.fillStyle = z === WALL - 1 ? '#8590ad' : `rgb(${50 * f | 0},${56 * f | 0},${74 * f | 0})`;
+      ctx.fillStyle = top ? '#8590ad' : `rgb(${50 * f | 0},${56 * f | 0},${74 * f | 0})`;
       const o = HALF + 26;
       ctx.fillRect(-o, -o, o * 2, 26); ctx.fillRect(-o, HALF, o * 2, 26);
       ctx.fillRect(-o, -HALF, 26, HALF * 2); ctx.fillRect(HALF, -HALF, 26, HALF * 2);
-      if (z === WALL - 1) {
+      if (top) {
         ctx.fillStyle = '#e3b23c';
         ctx.fillRect(-HALF, -HALF - 3, HALF * 2, 3); ctx.fillRect(-HALF, HALF, HALF * 2, 3);
         ctx.fillRect(-HALF - 3, -HALF, 3, HALF * 2); ctx.fillRect(HALF, -HALF, 3, HALF * 2);
@@ -612,7 +655,13 @@
 
     // 立体物を画面のY順に並べて描く
     const list = [];
-    for (const o of obstacles) { const [sx, sy] = toScreen(o.x, o.y); list.push({ sy, f: () => drawStack(Models.get(o.model), sx, sy, o.a - cam.a) }); }
+    // 後ろからの視点では、自機より手前（画面の下）にあって自機に重なる障害物を半透明にする
+    const [psx, psy] = toScreen(player.x, player.y);
+    for (const o of obstacles) {
+      const [sx, sy] = toScreen(o.x, o.y);
+      const cover = view.follow && player.alive && sy > psy && sy - psy < up(30 * SC) && Math.abs(sx - psx) < (o.r + player.r) * view.Z;
+      list.push({ sy, f: () => drawStack(Models.get(o.model), sx, sy, o.a - cam.a, 0, cover ? 0.35 : 1) });
+    }
     for (const k of pickups) {
       if (k.t < 3 && Math.floor(k.t * 8) % 2) continue;
       const [sx, sy] = toScreen(k.x, k.y);
@@ -650,18 +699,18 @@
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     for (const q of particles) {
       if (q.k === 'ring' || q.k === 'ghost') continue;
-      const [sx, sy0] = toScreen(q.x, q.y), sy = sy0 - q.z, k = q.life / q.max;
-      if (q.k === 'debris') { ctx.fillStyle = q.col; ctx.fillRect(sx - q.size / 2, sy - q.size / 2, q.size, q.size); }
+      const [sx, sy0] = toScreen(q.x, q.y), sy = sy0 - up(q.z), k = q.life / q.max, Z = view.Z;
+      if (q.k === 'debris') { ctx.fillStyle = q.col; ctx.fillRect(sx - q.size * Z / 2, sy - q.size * Z / 2, q.size * Z, q.size * Z); }
       else if (q.k === 'spark') { ctx.fillStyle = q.col; ctx.globalAlpha = k; ctx.fillRect(sx - 1.5, sy - 1.5, 3, 3); ctx.globalAlpha = 1; }
       else if (q.k === 'steam') {
         ctx.fillStyle = `rgba(220,230,240,${k * 0.35})`;
-        ctx.beginPath(); ctx.arc(sx, sy, q.size * (1.8 - k), 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(sx, sy, q.size * Z * (1.8 - k), 0, Math.PI * 2); ctx.fill();
       } else if (q.k === 'smoke') {
         ctx.fillStyle = `rgba(60,58,66,${k * 0.55})`;
-        ctx.beginPath(); ctx.arc(sx, sy, q.size * (1.6 - k * 0.6), 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(sx, sy, q.size * Z * (1.6 - k * 0.6), 0, Math.PI * 2); ctx.fill();
       } else if (q.k === 'flash') {
         ctx.fillStyle = `rgba(255,240,200,${k})`;
-        ctx.beginPath(); ctx.arc(sx, sy, q.size * (0.6 + 0.4 * k), 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(sx, sy, q.size * Z * (0.6 + 0.4 * k), 0, Math.PI * 2); ctx.fill();
       }
     }
 
@@ -671,19 +720,20 @@
 
   function drawBullet(b, sx, sy) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const bz = up(b.z), Z = view.Z;
     if (b.owner === 'p') {
       const [px, py] = toScreen(b.px, b.py);
       ctx.strokeStyle = 'rgba(127,246,255,0.45)'; ctx.lineWidth = 6; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(px, py - b.z); ctx.lineTo(sx, sy - b.z); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(px, py - bz); ctx.lineTo(sx, sy - bz); ctx.stroke();
       ctx.strokeStyle = '#eaffff'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(px, py - b.z); ctx.lineTo(sx, sy - b.z); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(px, py - bz); ctx.lineTo(sx, sy - bz); ctx.stroke();
     } else {
       ctx.fillStyle = 'rgba(255,107,61,0.35)';
-      ctx.beginPath(); ctx.arc(sx, sy - b.z, 9, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(sx, sy - bz, 9 * Z, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#ff6b3d';
-      ctx.beginPath(); ctx.arc(sx, sy - b.z, 5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(sx, sy - bz, 5 * Z, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = '#fff1d6';
-      ctx.beginPath(); ctx.arc(sx, sy - b.z, 2.2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(sx, sy - bz, 2.2 * Z, 0, Math.PI * 2); ctx.fill();
     }
   }
 
@@ -735,6 +785,16 @@
     ctx.fillText('KILLS', VW - 20, 50);
     ctx.fillText('WAVE ' + Math.max(1, wave) + '   BEST ' + best, VW - 20, 66);
 
+    // 視点の名前（切り替えた直後は大きく）
+    ctx.textAlign = 'right'; ctx.font = font(11); ctx.fillStyle = '#6b7a90';
+    ctx.fillText('VIEW ' + VIEWS[viewIdx].name + '  [C]', VW - 20, VH - 30);
+    if (viewBanner > 0) {
+      ctx.textAlign = 'center'; ctx.globalAlpha = Math.min(1, viewBanner * 2);
+      ctx.font = font(18, 800); ctx.fillStyle = '#7ff6ff';
+      ctx.fillText('視点: ' + VIEWS[viewIdx].name, VW / 2, VH * 0.32);
+      ctx.globalAlpha = 1;
+    }
+
     // バナー
     if (banner) {
       const a = Math.min(1, banner.t * 2);
@@ -749,7 +809,9 @@
     // 操作ヒント（最初のウェーブだけ）
     if (wave <= 1 && mode === 'play') {
       ctx.textAlign = 'left'; ctx.font = font(12, 400); ctx.fillStyle = 'rgba(159,179,200,0.8)';
-      ctx.fillText('矢印/WASD 移動 / Z 射撃（正面へ） / X ダッシュ突撃 / Shift 向き固定 / Q・E 視点回転 / M 消音', 20, VH - 30);
+      ctx.fillText(view.follow
+        ? '↑↓ 前進・後退 / ←→ 旋回 / Q・E 横歩き / Z 射撃 / X ダッシュ突撃 / C 視点切替 / M 消音'
+        : '矢印/WASD 移動 / Z 射撃（正面へ） / X ダッシュ突撃 / Shift 向き固定 / Q・E 視点回転 / C 視点切替 / M 消音', 20, VH - 30);
     }
 
     // 照準
@@ -758,7 +820,7 @@
       let x, y;
       if (t) [x, y] = toScreen(t.x, t.y);
       else [x, y] = toScreen(p.x + Math.cos(p.a) * 200, p.y + Math.sin(p.a) * 200);
-      y -= 9.5 * SC;
+      y -= up(10.5 * SC);
       ctx.strokeStyle = t ? '#ffd27a' : 'rgba(127,246,255,0.7)'; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath();
@@ -777,7 +839,7 @@
   // ?debug で状態を覗けるようにする（ヘッドレスでの動作確認用）
   if (params.has('debug')) {
     window.__stack = { get player() { return player; }, get enemies() { return enemies; }, get mode() { return mode; },
-      get kills() { return kills; }, get wave() { return wave; }, get bullets() { return bullets; }, cam,
+      get kills() { return kills; }, get wave() { return wave; }, get bullets() { return bullets; }, cam, VIEWS, view, get viewIdx() { return viewIdx; },
       spawn(type, dx, dy) { enemies.push(makeEnemy(type, player.x + dx, player.y + dy)); } };
   }
   const warp = +params.get('warp') || 0;
