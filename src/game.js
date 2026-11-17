@@ -247,16 +247,15 @@
 
   // ---------------- 視点と座標変換 ----------------
   // 視点は「床をどれだけ縦に縮めるか（k）」「高さ 1 あたり何 px 持ち上げるか（L）」「拡大率（Z）」「自機を画面のどの高さに置くか（cy）」で決まる。
-  // k = 1, L = 1 が真上からの俯瞰。k を小さくすると床が寝て、後ろ上から斜めに見下ろす形になる（正射影のまま。遠近は付けない）。
+  // k = 1, L = 1 が真上からの俯瞰。k を小さくすると床が寝て、斜めに見下ろす形になる（正射影のまま。遠近は付けない）。
   // follow の視点は、カメラが自機の背中側へ回り込み、機体の前方が常に画面の上になる。
   const VIEWS = [
     { id: 'top', name: '俯瞰', k: 1, L: 1, Z: 1, cy: 0.56, follow: false },
-    { id: 'chase', name: '後ろ上', k: 0.56, L: 1.2, Z: 1.2, cy: 0.7, follow: true },
-    // 一人称: 別の描画（fps.js）。k などは切り替えの途中で使う後ろ上の値
+    // 一人称: 別の描画（fps.js）。k などは切り替えの途中（俯瞰との行き来）で使う値
     { id: 'cockpit', name: 'コックピット', k: 0.56, L: 1.2, Z: 1.2, cy: 0.7, follow: true, fps: true },
   ];
   let viewIdx = 0;
-  try { viewIdx = clamp(+localStorage.getItem('stackbot-view') || 0, 0, VIEWS.length - 1); } catch (e) { /* 保存できない環境 */ }
+  try { viewIdx = Math.max(0, VIEWS.findIndex((v) => v.id === localStorage.getItem('stackbot-view-id'))); } catch (e) { /* 保存できない環境 */ }
   if (params.has('view')) viewIdx = clamp(VIEWS.findIndex((v) => v.id === params.get('view')), 0, VIEWS.length - 1);
   const view = { ...VIEWS[viewIdx] };   // いまの値（切り替え時はなめらかに近づける）
   let viewBanner = 0, switchFx = 0;
@@ -264,7 +263,7 @@
     const was = VIEWS[viewIdx].fps;
     viewIdx = (i + VIEWS.length) % VIEWS.length; viewBanner = 1.6;
     if (was !== !!VIEWS[viewIdx].fps) switchFx = 0.35;   // 一人称への出入りは走査線で切り替える
-    try { localStorage.setItem('stackbot-view', String(viewIdx)); } catch (e) { /* 無視 */ }
+    try { localStorage.setItem('stackbot-view-id', VIEWS[viewIdx].id); } catch (e) { /* 無視 */ }
   }
   function updateView(dt) {
     const T = VIEWS[viewIdx], k = Math.min(1, dt * 6);

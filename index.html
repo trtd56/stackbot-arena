@@ -28,6 +28,8 @@
     .big { font-size: 56px; font-weight: 800; color: #fff; margin: 4px 0 0; }
     .stats { display: flex; gap: 28px; justify-content: center; margin: 10px 0 20px; color: var(--dim); font-size: 13px; }
     .stats b { display: block; color: var(--fg); font-size: 22px; }
+    .kbd-note { display: none; color: #ffcf6b; border: 1px solid #6b5a2b; border-radius: 6px; padding: 8px 10px; font-size: 13px; line-height: 1.6; }
+    @media (pointer: coarse) { .kbd-note { display: block; } }
     .hint { font-size: 12px; margin-top: 12px; color: #6b7a90; }
   </style>
 </head>
@@ -44,10 +46,11 @@
         <tr><td>Z（長押し）</td><td>射撃（機体の正面へ）</td></tr>
         <tr><td>X</td><td>ダッシュ突撃（一瞬無敵 → オーバーヒート）</td></tr>
         <tr><td>Shift（押している間）</td><td>向きを固定（横歩き・後退撃ち）</td></tr>
-        <tr><td>Q / E</td><td>視点を回す（後ろ上・コックピットでは横歩き）</td></tr>
-        <tr><td>C</td><td>視点の切り替え（俯瞰 → 後ろ上 → コックピット）</td></tr>
+        <tr><td>Q / E</td><td>視点を回す（コックピットでは横歩き）</td></tr>
+        <tr><td>C</td><td>視点の切り替え（俯瞰 ⇔ コックピット）</td></tr>
         <tr><td>M</td><td>消音</td></tr>
       </table>
+      <p class="kbd-note">このゲームはキーボードで遊びます。スマホ・タブレットのタッチ操作には対応していません。PC のブラウザで開いてください。</p>
       <button id="start">START</button>
       <div class="hint">Enter でも開始</div>
     </div>
