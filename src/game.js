@@ -7,6 +7,8 @@
   const WALL = 36;
   const params = new URLSearchParams(location.search);
   const DEMO = params.has('demo');
+  // ?scene … 画面確認用の止まった場面（敵を自機の前に並べ、敵は動かず撃たない。ウェーブも進まない）。&fire で撃ち続ける
+  const SCENE = params.has('scene');
 
   const cvs = document.getElementById('game');
   const ctx = cvs.getContext('2d');
@@ -122,15 +124,18 @@
   const VIEWS = [
     { id: 'top', name: '俯瞰', k: 1, L: 1, Z: 1, cy: 0.56, follow: false },
     { id: 'chase', name: '後ろ上', k: 0.56, L: 1.2, Z: 1.2, cy: 0.7, follow: true },
-    { id: 'low', name: '低い後ろ（試作）', k: 0.3, L: 1.35, Z: 1.55, cy: 0.8, follow: true },
+    // 一人称: 別の描画（fps.js）。k などは切り替えの途中で使う後ろ上の値
+    { id: 'cockpit', name: 'コックピット', k: 0.56, L: 1.2, Z: 1.2, cy: 0.7, follow: true, fps: true },
   ];
   let viewIdx = 0;
   try { viewIdx = clamp(+localStorage.getItem('stackbot-view') || 0, 0, VIEWS.length - 1); } catch (e) { /* 保存できない環境 */ }
   if (params.has('view')) viewIdx = clamp(VIEWS.findIndex((v) => v.id === params.get('view')), 0, VIEWS.length - 1);
   const view = { ...VIEWS[viewIdx] };   // いまの値（切り替え時はなめらかに近づける）
-  let viewBanner = 0;
+  let viewBanner = 0, switchFx = 0;
   function setView(i) {
+    const was = VIEWS[viewIdx].fps;
     viewIdx = (i + VIEWS.length) % VIEWS.length; viewBanner = 1.6;
+    if (was !== !!VIEWS[viewIdx].fps) switchFx = 0.35;   // 一人称への出入りは走査線で切り替える
     try { localStorage.setItem('stackbot-view', String(viewIdx)); } catch (e) { /* 無視 */ }
   }
   function updateView(dt) {
@@ -138,6 +143,7 @@
     for (const f of ['k', 'L', 'Z', 'cy']) view[f] += (T[f] - view[f]) * k;
     view.follow = T.follow;
     viewBanner = Math.max(0, viewBanner - dt);
+    switchFx = Math.max(0, switchFx - dt);
   }
   function camCenter() { return [VW / 2, VH * view.cy]; }
   function toScreen(wx, wy) {
@@ -409,6 +415,7 @@
     // ---- 敵 ----
     for (const e of enemies) {
       const T = TYPES[e.type];
+      if (SCENE) { e.walk += dt * 6; e.flash -= dt; continue; }
       const dx = p.x - e.x, dy = p.y - e.y, d = Math.hypot(dx, dy) || 1, toP = Math.atan2(dy, dx);
       let mvx = 0, mvy = 0;
       e.flash -= dt; e.cd -= dt; e.recoil = Math.max(0, (e.recoil || 0) - dt * 6);
@@ -589,9 +596,23 @@
     ctx.globalAlpha = 1;
   }
 
-  function frameOf(name, walk) { const n = Models.frames(name); return Math.floor(walk) % n; }
+  function frameOf(name, walk) { const n = Models.frames(name); return ((Math.floor(walk) % n) + n) % n; }
+
+  // 一人称の描画へ渡す状態
+  const fpsState = {
+    get player() { return player; }, get enemies() { return enemies; }, get obstacles() { return obstacles; },
+    get bullets() { return bullets; }, get particles() { return particles; }, get pickups() { return pickups; },
+    get spawns() { return spawns; }, get time() { return time; }, get shake() { return shake; }, get wave() { return wave; },
+    get kills() { return kills; }, get best() { return best; }, get switchFx() { return switchFx / 0.35; },
+    scenery: [], HEAT_T: 1.1, Models, assistTarget: (p) => assistTarget(p), frameOf: (n, w) => frameOf(n, w),
+  };
 
   function draw() {
+    if (VIEWS[viewIdx].fps) {
+      FPS.render(ctx, VW, VH, fpsState);
+      drawHud(true);
+      return;
+    }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.imageSmoothingEnabled = false;
     ctx.fillStyle = '#0a0c12';
@@ -737,15 +758,17 @@
     }
   }
 
-  function drawHud() {
+  function drawHud(fps = false) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     const p = player;
-    if (p.hurt > 0) {
+    if (p.hurt > 0 && !fps) {
       const g = ctx.createRadialGradient(VW / 2, VH / 2, Math.min(VW, VH) * 0.3, VW / 2, VH / 2, Math.max(VW, VH) * 0.7);
       g.addColorStop(0, 'rgba(255,40,60,0)'); g.addColorStop(1, `rgba(255,40,60,${p.hurt * 0.45})`);
       ctx.fillStyle = g; ctx.fillRect(0, 0, VW, VH);
     }
     if (mode === 'title' || mode === 'over') return;
+    const font = (px, w = 700) => `${w} ${px}px ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
+    if (fps) { drawTexts(font, true); return; }   // 計器はコックピットの中に描いてある
 
     // 画面外の敵の方向
     for (const e of enemies) {
@@ -760,7 +783,6 @@
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-    const font = (px, w = 700) => `${w} ${px}px ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
     // 装甲ゲージ
     const bx = 20, by = 20, bw = Math.min(260, VW * 0.4);
     ctx.fillStyle = 'rgba(10,12,18,0.7)'; ctx.fillRect(bx - 6, by - 6, bw + 12, 54);
@@ -784,10 +806,30 @@
     ctx.font = font(11); ctx.fillStyle = '#9fb3c8';
     ctx.fillText('KILLS', VW - 20, 50);
     ctx.fillText('WAVE ' + Math.max(1, wave) + '   BEST ' + best, VW - 20, 66);
+    drawTexts(font, false);
 
+    // 照準
+    if (mode === 'play' && p.alive) {
+      const t = assistTarget(p);
+      let x, y;
+      if (t) [x, y] = toScreen(t.x, t.y);
+      else [x, y] = toScreen(p.x + Math.cos(p.a) * 200, p.y + Math.sin(p.a) * 200);
+      y -= up(10.5 * SC);
+      ctx.strokeStyle = t ? '#ffd27a' : 'rgba(127,246,255,0.7)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x - 15, y); ctx.lineTo(x - 5, y); ctx.moveTo(x + 5, y); ctx.lineTo(x + 15, y);
+      ctx.moveTo(x, y - 15); ctx.lineTo(x, y - 5); ctx.moveTo(x, y + 5); ctx.lineTo(x, y + 15);
+      ctx.stroke();
+    }
+  }
+
+  // 視点の名前・バナー・操作ヒント（どの視点でも全解像度の文字で重ねる）
+  function drawTexts(font, fps) {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     // 視点の名前（切り替えた直後は大きく）
     ctx.textAlign = 'right'; ctx.font = font(11); ctx.fillStyle = '#6b7a90';
-    ctx.fillText('VIEW ' + VIEWS[viewIdx].name + '  [C]', VW - 20, VH - 30);
+    if (!fps) ctx.fillText('VIEW ' + VIEWS[viewIdx].name + '  [C]', VW - 20, VH - 30);
     if (viewBanner > 0) {
       ctx.textAlign = 'center'; ctx.globalAlpha = Math.min(1, viewBanner * 2);
       ctx.font = font(18, 800); ctx.fillStyle = '#7ff6ff';
@@ -809,31 +851,29 @@
     // 操作ヒント（最初のウェーブだけ）
     if (wave <= 1 && mode === 'play') {
       ctx.textAlign = 'left'; ctx.font = font(12, 400); ctx.fillStyle = 'rgba(159,179,200,0.8)';
-      ctx.fillText(view.follow
+      const hint = view.follow
         ? '↑↓ 前進・後退 / ←→ 旋回 / Q・E 横歩き / Z 射撃 / X ダッシュ突撃 / C 視点切替 / M 消音'
-        : '矢印/WASD 移動 / Z 射撃（正面へ） / X ダッシュ突撃 / Shift 向き固定 / Q・E 視点回転 / C 視点切替 / M 消音', 20, VH - 30);
+        : '矢印/WASD 移動 / Z 射撃（正面へ） / X ダッシュ突撃 / Shift 向き固定 / Q・E 視点回転 / C 視点切替 / M 消音';
+      if (fps) { ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(200,215,230,0.85)'; ctx.fillText(hint, VW / 2, VH * 0.1); }
+      else ctx.fillText(hint, 20, VH - 30);
     }
 
-    // 照準
-    if (mode === 'play' && p.alive) {
-      const t = assistTarget(p);
-      let x, y;
-      if (t) [x, y] = toScreen(t.x, t.y);
-      else [x, y] = toScreen(p.x + Math.cos(p.a) * 200, p.y + Math.sin(p.a) * 200);
-      y -= up(10.5 * SC);
-      ctx.strokeStyle = t ? '#ffd27a' : 'rgba(127,246,255,0.7)'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(x - 15, y); ctx.lineTo(x - 5, y); ctx.moveTo(x + 5, y); ctx.lineTo(x + 15, y);
-      ctx.moveTo(x, y - 15); ctx.lineTo(x, y - 5); ctx.moveTo(x, y + 5); ctx.lineTo(x, y + 15);
-      ctx.stroke();
-    }
   }
 
   // ---------------- ループ ----------------
   buildFloor();
+  FPS.setGround(floorCanvas, 1, HALF);
+  FPS.setSky(Field.SKY, Field.panorama());
   reset();
   if (DEMO) { $('title').hidden = true; }
+  if (SCENE) {
+    startGame();
+    intermission = 1e9; player.x = 0; player.y = 300; player.a = -Math.PI / 2; cam.a = 0;
+    for (const [t, dx, dy, a] of [['scuttler', -40, -150, 1.2], ['warden', 110, -260, 2.2], ['colossus', -120, -380, 1.4], ['scuttler', 60, -470, 2], ['warden', -260, -560, 0.6]]) {
+      const e = makeEnemy(t, player.x + dx, player.y + dy); e.a = a; enemies.push(e);
+    }
+    if (params.has('fire')) keys.add('KeyZ');
+  }
   document.body.classList.toggle('playing', false);
   // ?warp=秒 で開始直後にその秒数だけ進める（スクリーンショット確認用）
   // ?debug で状態を覗けるようにする（ヘッドレスでの動作確認用）
@@ -846,7 +886,7 @@
   for (let i = 0; i < warp * 60; i++) update(1 / 60);
   let last = performance.now();
   function loop(now) {
-    const dt = Math.min(0.033, (now - last) / 1000);
+    const dt = Math.max(0, Math.min(0.033, (now - last) / 1000));
     last = now;
     document.body.classList.toggle('playing', mode === 'play');
     update(dt);

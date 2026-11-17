@@ -16,7 +16,8 @@ const Models = (() => {
   const cyl = (cx, cy, r, z0, z1, col, glow = false) => ({ t: 'c', cx, cy, r, z0, z1, col, glow });
 
   // 部品リスト → 断面画像の配列
-  function build(def, flash, tint) {
+  function build(def, flash, tint, fog) {
+    const fk = fog * 0.22;
     const S = def.size, H = def.height, half = S / 2;
     const vox = new Array(S * S * H).fill(null);
     const idx = (x, y, z) => (z * S + y) * S + x;
@@ -62,6 +63,7 @@ const Models = (() => {
           r *= f; g *= f; b *= f;
           if (flash) { r = r * 0.25 + 255 * 0.75; g = g * 0.25 + 255 * 0.75; b = b * 0.25 + 255 * 0.75; }
           else if (tint) { r = r * 0.45 + 255 * 0.55; g = g * 0.45 + 70 * 0.55; b = b * 0.45 + 40 * 0.55; }  // オーバーヒートの赤
+          if (fk) { r += (fogColor[0] - r) * fk; g += (fogColor[1] - g) * fk; b += (fogColor[2] - b) * fk; }  // 一人称視点の霞
           const o = (y * S + x) * 4;
           img.data[o] = Math.min(255, r);
           img.data[o + 1] = Math.min(255, g);
@@ -292,15 +294,18 @@ const Models = (() => {
 
   const FRAMES = { vanguard: 4, scuttler: 4, warden: 3, colossus: 4 };
   const cache = {};
-  function get(name, frame = 0, flash = false, tint = false) {
-    const key = name + ':' + frame + ':' + (flash ? 1 : 0) + (tint ? 't' : '');
+  let fogColor = [0, 0, 0];
+  function setFogColor(c) { fogColor = c; }
+  // fog: 0..4。一人称視点で遠くの物を霞の色へ寄せた版
+  function get(name, frame = 0, flash = false, tint = false, fog = 0) {
+    const key = name + ':' + frame + ':' + (flash ? 1 : 0) + (tint ? 't' : '') + fog;
     if (!cache[key]) {
       const def = defs[name](frame);
-      cache[key] = { size: def.size, slices: build(def, flash, tint) };
+      cache[key] = { size: def.size, slices: build(def, flash, tint, fog) };
     }
     return cache[key];
   }
   function frames(name) { return FRAMES[name] || 1; }
 
-  return { get, frames };
+  return { get, frames, setFogColor };
 })();
