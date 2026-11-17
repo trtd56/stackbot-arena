@@ -54,7 +54,9 @@
       case 'hit': noise(0.05, 0.08, 3000); break;
       case 'boom': noise(0.45, 0.25, 900); tone('sine', 120, 40, 0.4, 0.2); break;
       case 'hurt': tone('sawtooth', 220, 70, 0.25, 0.08); break;
-      case 'dash': noise(0.15, 0.06, 6000); break;
+      case 'dash': noise(0.18, 0.09, 6000); tone('sawtooth', 160, 520, 0.16, 0.05); break;
+      case 'vent': noise(0.6, 0.05, 1800); break;
+      case 'ready': tone('sine', 700, 1050, 0.08, 0.04); break;
       case 'pickup': tone('sine', 500, 1200, 0.2, 0.08); break;
       case 'slam': noise(0.5, 0.2, 400); break;
       case 'wave': tone('triangle', 440, 880, 0.3, 0.06); break;
@@ -62,21 +64,21 @@
   }
 
   // ---------------- 入力 ----------------
+  // キーボードだけで遊ぶ。照準 = 機体の向き（+ 前方の狭い範囲の敵へ軽く吸い付く）
   const keys = new Set();
-  const mouse = { x: VW / 2, y: VH / 2, down: false };
+  const GAME_KEYS = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyZ', 'KeyX'];
   addEventListener('keydown', (e) => {
+    initAudio();
+    if (GAME_KEYS.includes(e.code)) e.preventDefault();
     keys.add(e.code);
-    if (e.code === 'Space') { e.preventDefault(); wantDash = true; }
+    if (e.repeat) return;
+    if (e.code === 'KeyX' || e.code === 'Space') wantDash = true;
     if (e.code === 'KeyM') muted = !muted;
     if ((e.code === 'KeyR' || e.code === 'Enter') && mode === 'over') startGame();
     if (e.code === 'Enter' && mode === 'title') startGame();
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
-  addEventListener('blur', () => { keys.clear(); mouse.down = false; });
-  cvs.addEventListener('mousemove', (e) => { mouse.x = e.clientX; mouse.y = e.clientY; });
-  cvs.addEventListener('mousedown', (e) => { if (e.button === 0) mouse.down = true; initAudio(); });
-  addEventListener('mouseup', (e) => { if (e.button === 0) mouse.down = false; });
-  cvs.addEventListener('contextmenu', (e) => e.preventDefault());
+  addEventListener('blur', () => keys.clear());
   $('start').addEventListener('click', () => { initAudio(); startGame(); });
   $('retry').addEventListener('click', () => { initAudio(); startGame(); });
   let wantDash = false;
@@ -96,8 +98,8 @@
 
   function reset() {
     player = {
-      x: 0, y: 60, a: -Math.PI / 2, r: 7 * SC, hp: 100, maxHp: 100, fireCd: 0, dashT: 0, dashCd: 0,
-      dashDir: 0, inv: 0, walk: 0, hurt: 0, alive: true, strafe: 1, strafeT: 0,
+      x: 0, y: 60, a: -Math.PI / 2, r: 7 * SC, hp: 100, maxHp: 100, fireCd: 0, dashT: 0, heat: 0,
+      dashDir: 0, inv: 0, walk: 0, hurt: 0, alive: true, strafe: 1, strafeT: 0, rammed: null, recoil: 0,
     };
     enemies = []; bullets = []; particles = []; pickups = []; spawns = [];
     obstacles = OBSTACLES.map(([m, x, y]) => ({ model: m, x, y, a: m === 'crate' ? rand(-0.4, 0.4) : 0, r: m === 'crate' ? 9.5 * SC : 7 * SC }));
@@ -117,10 +119,6 @@
   function toScreen(wx, wy) {
     const [cx, cy] = camCenter(), dx = wx - cam.x, dy = wy - cam.y, c = Math.cos(cam.a), s = Math.sin(cam.a);
     return [cx + dx * c + dy * s, cy - dx * s + dy * c];
-  }
-  function toWorld(sx, sy) {
-    const [cx, cy] = camCenter(), dx = sx - cx, dy = sy - cy, c = Math.cos(cam.a), s = Math.sin(cam.a);
-    return [cam.x + dx * c - dy * s, cam.y + dx * s + dy * c];
   }
   function worldTransform(lift = 0) {
     const [cx, cy] = camCenter();
@@ -248,6 +246,28 @@
     return { mx, my, aim, shoot };
   }
 
+  const DASH_T = 0.22, HEAT_T = 1.1, RAM_DMG = 4, ASSIST = 0.25, ASSIST_R = 720;
+
+  function assistTarget(p) {
+    let best = null, bd = ASSIST_R;
+    for (const e of enemies) {
+      const d = Math.hypot(e.x - p.x, e.y - p.y);
+      if (d < bd && Math.abs(angDiff(p.a, Math.atan2(e.y - p.y, e.x - p.x))) < ASSIST) { bd = d; best = e; }
+    }
+    return best;
+  }
+
+  // 俯瞰: 矢印/WASD は画面の向き基準で移動し、機体は進む方向を向く。Shift を押している間は向きを固定（横歩き・後退撃ち）
+  function keyControl(p, dt) {
+    const ix = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+    const iy = (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0);
+    const c = Math.cos(cam.a), s = Math.sin(cam.a);
+    const mx = ix * c - iy * s, my = ix * s + iy * c;
+    const lock = keys.has('ShiftLeft') || keys.has('ShiftRight');
+    const aim = (mx || my) && !lock ? Math.atan2(my, mx) : p.a;
+    return { mx, my, aim };
+  }
+
   function update(dt) {
     time += dt;
     const auto = mode !== 'play';
@@ -264,44 +284,58 @@
       let mx, my, aim, shoot;
       if (auto) ({ mx, my, aim, shoot } = aiControl());
       else {
-        const ix = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
-        const iy = (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0);
-        const c = Math.cos(cam.a), s = Math.sin(cam.a);
-        mx = ix * c - iy * s; my = ix * s + iy * c;
-        const [wx, wy] = toWorld(mouse.x, mouse.y);
-        aim = Math.atan2(wy - p.y, wx - p.x);
-        shoot = mouse.down;
+        ({ mx, my, aim } = keyControl(p, dt));
+        shoot = keys.has('KeyZ');
       }
       const ml = Math.hypot(mx, my);
       if (ml > 0) { mx /= ml; my /= ml; }
-      if (wantDash && p.dashCd <= 0 && !auto) {
-        p.dashT = 0.17; p.dashCd = 0.9; p.inv = Math.max(p.inv, 0.25);
+      // X: ダッシュ突撃。突進中は無敵で、ぶつかった敵に大ダメージ。終わるとオーバーヒート（射撃・ダッシュ不可、移動が遅い）
+      if (wantDash && p.heat <= 0 && p.dashT <= 0 && !auto) {
+        p.dashT = DASH_T; p.inv = Math.max(p.inv, DASH_T + 0.08); p.rammed = new Set();
         p.dashDir = ml > 0 ? Math.atan2(my, mx) : p.a;
+        if (ml > 0) p.a = p.dashDir;
         sfx('dash');
       }
       wantDash = false;
       if (p.dashT > 0) {
         p.dashT -= dt;
-        p.x += Math.cos(p.dashDir) * 860 * dt; p.y += Math.sin(p.dashDir) * 860 * dt;
-        particles.push({ k: 'ghost', x: p.x, y: p.y, z: 0, a: p.a, life: 0.18, max: 0.18 });
+        p.x += Math.cos(p.dashDir) * 980 * dt; p.y += Math.sin(p.dashDir) * 980 * dt;
+        particles.push({ k: 'ghost', x: p.x, y: p.y, z: 0, a: p.a, life: 0.2, max: 0.2 });
+        for (const e of enemies) {
+          if (e.hp <= 0 || p.rammed.has(e) || Math.hypot(e.x - p.x, e.y - p.y) > e.r + p.r + 6) continue;
+          p.rammed.add(e); e.hp -= RAM_DMG; e.flash = 0.12;
+          const k = e.type === 'colossus' ? 120 : 420;
+          e.vx += Math.cos(p.dashDir) * k; e.vy += Math.sin(p.dashDir) * k;
+          sparks(e.x, e.y, 12 * SC, 16, '#ffd27a'); sfx('hit'); shake = Math.max(shake, 7);
+          if (e.hp <= 0) killEnemy(e);
+        }
+        if (p.dashT <= 0) { p.heat = HEAT_T; sfx('vent'); }
       } else if (ml > 0) {
-        p.x += mx * 270 * dt; p.y += my * 270 * dt; p.walk += dt * 9;
+        const sp = p.heat > 0 ? 150 : 270;
+        p.x += mx * sp * dt; p.y += my * sp * dt; p.walk += dt * (p.heat > 0 ? 5 : 9);
       }
-      p.dashCd -= dt; p.inv -= dt; p.hurt = Math.max(0, p.hurt - dt * 2.5);
-      p.a += angDiff(p.a, aim) * Math.min(1, dt * 18);
+      if (p.heat > 0) {
+        p.heat -= dt;
+        if (p.heat <= 0) sfx('ready');
+        if (Math.random() < dt * 30) particles.push({ k: 'steam', x: p.x + rand(-10, 10), y: p.y + rand(-10, 10), z: rand(14, 20) * SC,
+          vx: rand(-15, 15), vy: rand(-15, 15), vz: rand(40, 90), life: rand(0.4, 0.8), max: 0.8, size: rand(4, 8) });
+      }
+      p.inv -= dt; p.hurt = Math.max(0, p.hurt - dt * 2.5); p.recoil = Math.max(0, p.recoil - dt * 8);
+      if (p.dashT <= 0) p.a += angDiff(p.a, aim) * Math.min(1, dt * (auto ? 18 : 14));
       collideWorld(p);
 
       p.fireCd -= dt;
-      if (shoot && p.fireCd <= 0) {
-        p.fireCd = 0.11;
+      if (shoot && p.fireCd <= 0 && p.heat <= 0 && p.dashT <= 0) {
+        p.fireCd = 0.11; p.recoil = 1;
         const c = Math.cos(p.a), s = Math.sin(p.a);
         const mxp = p.x + c * 11 * SC - s * 7.5 * SC, myp = p.y + s * 11 * SC + c * 7.5 * SC;  // 右腕ライフルの銃口
+        // 照準: 機体の正面。正面 ±14° 以内・720 以内の敵がいれば、いちばん近い敵へ弾を吸い付かせる
         let ba = p.a;
         if (!auto) {
-          const [wx, wy] = toWorld(mouse.x, mouse.y);
-          if (Math.hypot(wx - p.x, wy - p.y) > 50) ba = Math.atan2(wy - myp, wx - mxp);
+          const t = assistTarget(p);
+          if (t) ba = Math.atan2(t.y - myp, t.x - mxp);
         }
-        fire('p', mxp, myp, ba + rand(-0.035, 0.035), 900, 1, 9.5 * SC);
+        fire('p', mxp, myp, ba + rand(-0.03, 0.03), 900, 1, 9.5 * SC);
         particles.push({ k: 'flash', x: mxp, y: myp, z: 9.5 * SC, life: 0.05, max: 0.05, size: 12 });
         sfx('shoot');
       }
@@ -435,7 +469,7 @@
       if (q.k === 'debris' || q.k === 'spark') {
         q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; q.vz -= 700 * dt;
         if (q.z < 0) { q.z = 0; q.vz *= -0.35; q.vx *= 0.6; q.vy *= 0.6; }
-      } else if (q.k === 'smoke') {
+      } else if (q.k === 'smoke' || q.k === 'steam') {
         q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt;
       }
     }
@@ -606,7 +640,10 @@
       const [sx, sy0] = toScreen(q.x, q.y), sy = sy0 - q.z, k = q.life / q.max;
       if (q.k === 'debris') { ctx.fillStyle = q.col; ctx.fillRect(sx - q.size / 2, sy - q.size / 2, q.size, q.size); }
       else if (q.k === 'spark') { ctx.fillStyle = q.col; ctx.globalAlpha = k; ctx.fillRect(sx - 1.5, sy - 1.5, 3, 3); ctx.globalAlpha = 1; }
-      else if (q.k === 'smoke') {
+      else if (q.k === 'steam') {
+        ctx.fillStyle = `rgba(220,230,240,${k * 0.35})`;
+        ctx.beginPath(); ctx.arc(sx, sy, q.size * (1.8 - k), 0, Math.PI * 2); ctx.fill();
+      } else if (q.k === 'smoke') {
         ctx.fillStyle = `rgba(60,58,66,${k * 0.55})`;
         ctx.beginPath(); ctx.arc(sx, sy, q.size * (1.6 - k * 0.6), 0, Math.PI * 2); ctx.fill();
       } else if (q.k === 'flash') {
@@ -671,10 +708,12 @@
     const hpk = p.hp / p.maxHp;
     ctx.fillStyle = hpk > 0.5 ? '#1fd1c1' : hpk > 0.25 ? '#e3b23c' : '#ff5470';
     ctx.fillRect(bx, by + 17, bw * hpk, 10);
-    ctx.fillStyle = '#9fb3c8'; ctx.font = font(10); ctx.fillText('DASH', bx, by + 32);
-    ctx.fillStyle = '#2a3145'; ctx.fillRect(bx + 40, by + 34, 80, 5);
-    ctx.fillStyle = p.dashCd <= 0 ? '#7ff6ff' : '#4d6a80';
-    ctx.fillRect(bx + 40, by + 34, 80 * clamp(1 - p.dashCd / 0.9, 0, 1), 5);
+    const hot = p.heat > 0;
+    ctx.font = font(10); ctx.fillStyle = hot ? '#ff8a5c' : '#9fb3c8';
+    ctx.fillText(hot ? 'OVERHEAT' : 'RAM  [X]', bx, by + 32);
+    ctx.fillStyle = '#2a3145'; ctx.fillRect(bx + 70, by + 34, 80, 5);
+    ctx.fillStyle = hot ? (Math.floor(time * 10) % 2 ? '#ff5a3c' : '#ffb347') : '#7ff6ff';
+    ctx.fillRect(bx + 70, by + 34, 80 * (hot ? p.heat / HEAT_T : 1), 5);
 
     // 撃破数とウェーブ
     ctx.textAlign = 'right';
@@ -697,13 +736,17 @@
     // 操作ヒント（最初のウェーブだけ）
     if (wave <= 1 && mode === 'play') {
       ctx.textAlign = 'left'; ctx.font = font(12, 400); ctx.fillStyle = 'rgba(159,179,200,0.8)';
-      ctx.fillText('WASD 移動 / マウス 照準 / 左クリック 射撃 / SPACE ダッシュ / Q・E 視点回転 / M 消音', 20, VH - 30);
+      ctx.fillText('矢印/WASD 移動 / Z 射撃（正面へ） / X ダッシュ突撃 / Shift 向き固定 / Q・E 視点回転 / M 消音', 20, VH - 30);
     }
 
     // 照準
-    if (mode === 'play') {
-      const x = mouse.x, y = mouse.y;
-      ctx.strokeStyle = '#7ff6ff'; ctx.lineWidth = 2;
+    if (mode === 'play' && p.alive) {
+      const t = assistTarget(p);
+      let x, y;
+      if (t) [x, y] = toScreen(t.x, t.y);
+      else [x, y] = toScreen(p.x + Math.cos(p.a) * 200, p.y + Math.sin(p.a) * 200);
+      y -= 9.5 * SC;
+      ctx.strokeStyle = t ? '#ffd27a' : 'rgba(127,246,255,0.7)'; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath();
       ctx.moveTo(x - 15, y); ctx.lineTo(x - 5, y); ctx.moveTo(x + 5, y); ctx.lineTo(x + 15, y);
@@ -718,6 +761,12 @@
   if (DEMO) { $('title').hidden = true; }
   document.body.classList.toggle('playing', false);
   // ?warp=秒 で開始直後にその秒数だけ進める（スクリーンショット確認用）
+  // ?debug で状態を覗けるようにする（ヘッドレスでの動作確認用）
+  if (params.has('debug')) {
+    window.__stack = { get player() { return player; }, get enemies() { return enemies; }, get mode() { return mode; },
+      get kills() { return kills; }, get wave() { return wave; }, get bullets() { return bullets; }, cam,
+      spawn(type, dx, dy) { enemies.push(makeEnemy(type, player.x + dx, player.y + dy)); } };
+  }
   const warp = +params.get('warp') || 0;
   for (let i = 0; i < warp * 60; i++) update(1 / 60);
   let last = performance.now();
