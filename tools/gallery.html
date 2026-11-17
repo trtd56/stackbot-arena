@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Robot Gallery</title>
   <style>
-    html, body { margin: 0; background: #1c2130; color: #9fb3c8; font: 13px ui-monospace, Menlo, monospace; }
+    html, body { margin: 0; background: #353029; color: #9fb3c8; font: 13px ui-monospace, Menlo, monospace; }
     canvas { display: block; image-rendering: pixelated; }
   </style>
 </head>
@@ -25,17 +25,17 @@
       const cw = 190, ch = 260;
       const cv = document.getElementById('c'), ctx = cv.getContext('2d');
       cv.width = cw * angles.length + 40; cv.height = ch * names.length + 20;
-      ctx.fillStyle = '#1c2130'; ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.fillStyle = '#353029'; ctx.fillRect(0, 0, cv.width, cv.height);
       ctx.imageSmoothingEnabled = false;
       names.forEach((n, row) => {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.fillStyle = '#9fb3c8'; ctx.fillText(n.toUpperCase(), 10, row * ch + 20);
         angles.forEach((a, col) => {
-          const m = Models.get(n, 1), h = m.size / 2, sx = 40 + col * cw + cw / 2, sy = row * ch + ch * 0.72;
+          const res = Models.RES || 1, m = Models.get(n, 1, false, false, 0, Models.lightOf ? Models.lightOf(a) : 0), h = (m.size * res) / 2, sx = 40 + col * cw + cw / 2, sy = row * ch + ch * 0.72;
           ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.fillStyle = 'rgba(0,0,0,0.38)';
-          ctx.beginPath(); ctx.ellipse(sx + 4, sy + 4, h * SC * Z * 0.75, h * SC * Z * 0.75, 0, 0, Math.PI * 2); ctx.fill();
-          const c = Math.cos(a) * SC * Z, s = Math.sin(a) * SC * Z;
+          ctx.fillStyle = 'rgba(20,14,34,0.45)';
+          ctx.beginPath(); ctx.ellipse(sx + 8, sy + 8, m.size / 2 * SC * Z * 0.8, m.size / 2 * SC * Z * 0.6, Math.PI / 4, 0, Math.PI * 2); ctx.fill();
+          const c = Math.cos(a) * SC * Z / res, s = Math.sin(a) * SC * Z / res;
           m.slices.forEach((img, i) => {
             if (!img) return;
             for (let k = 0; k < SC * Z; k++) {

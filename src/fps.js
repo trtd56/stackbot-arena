@@ -6,9 +6,9 @@
 
 const FPS = (() => {
   const SC = 3;
-  const EYE = 13 * SC;          // 目の高さ = 胸のコックピット（ワールドの px）
+  const EYE = 19 * SC;          // 目の高さ = 頭のコックピット（ワールドの px）。敵の上の層が見える高さ
   const NEAR = 14;              // これより近い物は描かない
-  const FOG0 = 260, FOG1 = 2300; // 霧のかかり始めと、完全に霞む距離
+  const FOG0 = 200, FOG1 = 1700; // 霧のかかり始めと、完全に霞む距離
 
   let lb = null, lctx = null, limg = null, l32 = null, LS = 3, LW = 0, LH = 0;
   const fc = { x: 0, y: 0, a: 0, c: 1, s: 0, f: 300, hz: 100 };
@@ -126,9 +126,9 @@ const FPS = (() => {
     const dx = wx - fc.x, dy = wy - fc.y, z = dx * fc.c + dy * fc.s;
     if (z < NEAR + 6) return;
     const lat = -dx * fc.s + dy * fc.c, k = fc.f / z, X = LW / 2 + lat * k;
-    const sl = model.slices, h = model.size / 2, rad = model.size * SC * k;
+    const sl = model.slices, h = (model.size * model.res) / 2, rad = model.size * SC * k;
     if (X < -rad || X > LW + rad) return;
-    const r = ang - fc.a, cr = Math.cos(r), sr = Math.sin(r), Zs = k * SC;
+    const r = ang - fc.a, cr = Math.cos(r), sr = Math.sin(r), Zs = (k * SC) / model.res;
     const step = SC * k, n = Math.min(14, Math.max(1, Math.ceil(step)));
     if (alpha < 1) lctx.globalAlpha = alpha;
     const one = (i) => {
@@ -211,7 +211,7 @@ const FPS = (() => {
     poly([[bx + 4, by - 12], [bx + 34, by - 16], [bx + 34, by - 13], [bx + 5, by - 9]], '#7d8794');
     // 銃口炎
     if (p.recoil > 0.7) {
-      const r = 6 + Math.random() * 6;
+      const r = 3 + Math.random() * 3;
       lctx.fillStyle = 'rgba(255,200,120,0.85)'; lctx.beginPath(); lctx.arc(tipX - 6, tipY, r, 0, Math.PI * 2); lctx.fill();
       lctx.fillStyle = '#fff6dc'; lctx.beginPath(); lctx.arc(tipX - 6, tipY, r * 0.45, 0, Math.PI * 2); lctx.fill();
     }
@@ -315,7 +315,6 @@ const FPS = (() => {
     for (const k of S.pickups) blip(k.x, k.y, '#4dff88', 2);
     for (const e of S.enemies) blip(e.x, e.y, e.type === 'colossus' ? '#ff4fd8' : e.type === 'warden' ? '#ff9a3c' : '#ff5470', e.type === 'colossus' ? 4 : 3);
     lctx.fillStyle = COL.ok; lctx.fillRect(cx - 1, cyR - 1, 2, 2);
-    text('RADAR', cx, cyR - R - 9, COL.dim, 1, 'center');
 
     // 計器盤のボルト
     lctx.fillStyle = COL.bolt;
@@ -393,8 +392,8 @@ const FPS = (() => {
 
     // 地面に描くもの（影・輪・予告）
     lctx.setTransform(1, 0, 0, 1, 0, 0);
-    for (const o of S.obstacles) groundEllipse(o.x + 6, o.y + 6, o.r + 2, 'rgba(0,0,0,0.3)');
-    for (const e of S.enemies) groundEllipse(e.x, e.y, e.r, 'rgba(0,0,0,0.38)');
+    for (const o of S.obstacles) groundEllipse(o.x + 7, o.y + 7, o.r + 2, 'rgba(20,14,34,0.4)');
+    for (const e of S.enemies) groundEllipse(e.x + 5, e.y + 5, e.r, 'rgba(20,14,34,0.45)');
     for (const b of S.bullets) groundEllipse(b.x, b.y, 3, 'rgba(0,0,0,0.3)');
     for (const s of S.spawns) {
       const k = 1 - s.t / 0.9;
@@ -407,8 +406,8 @@ const FPS = (() => {
     const list = [];
     const depth = (x, y) => (x - fc.x) * fc.c + (y - fc.y) * fc.s;
     const add = (x, y, f) => { const z = depth(x, y); if (z > NEAR) list.push({ z, f }); };
-    for (const o of S.scenery) add(o.x, o.y, () => drawStack(M.get(o.model, 0, false, false, fogLevel(depth(o.x, o.y))), o.x, o.y, o.a));
-    for (const o of S.obstacles) add(o.x, o.y, () => drawStack(M.get(o.model, 0, false, false, fogLevel(depth(o.x, o.y))), o.x, o.y, o.a));
+    for (const o of S.scenery) add(o.x, o.y, () => drawStack(M.get(o.model, o.frame || 0, false, false, fogLevel(depth(o.x, o.y)), M.lightOf(o.a)), o.x, o.y, o.a));
+    for (const o of S.obstacles) add(o.x, o.y, () => drawStack(M.get(o.model, 0, false, false, fogLevel(depth(o.x, o.y)), M.lightOf(o.a)), o.x, o.y, o.a));
     for (const k of S.pickups) {
       if (k.t < 3 && Math.floor(k.t * 8) % 2) continue;
       add(k.x, k.y, () => drawStack(M.get('repair'), k.x, k.y, k.a, 8 + Math.sin(k.a * 2) * 4));
@@ -419,7 +418,7 @@ const FPS = (() => {
         if (e.type === 'scuttler') { ox += (Math.random() - 0.5) * 1.6; oy += (Math.random() - 0.5) * 1.6; }
         if (e.recoil) { ox -= Math.cos(e.a) * e.recoil * 3; oy -= Math.sin(e.a) * e.recoil * 3; }
         const fl = e.flash > 0 || (e.charge > 0 && Math.sin(S.time * 40) > 0);
-        drawStack(M.get(e.type, S.frameOf(e.type, e.walk), fl, false, fl ? 0 : fogLevel(depth(e.x, e.y))), e.x + ox, e.y + oy, e.a);
+        drawStack(M.get(e.type, S.frameOf(e.type, e.walk), fl, false, fl ? 0 : fogLevel(depth(e.x, e.y)), M.lightOf(e.a)), e.x + ox, e.y + oy, e.a);
       });
     }
     for (const b of S.bullets) add(b.x, b.y, () => drawBullet(b));

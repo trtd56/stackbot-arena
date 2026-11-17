@@ -92,12 +92,33 @@
   let player, enemies, bullets, particles, pickups, spawns, obstacles;
   let wave, kills, queue, spawnTimer, intermission, banner, shake, deadTimer, time;
 
+  // 戦場の障害物。小さい物（竜の歯・折れた柱）は半径 7、大きい物（土嚢の陣地・装甲車の残骸・ドラム缶）は半径 9.5 ボクセル
+  const SMALL = { teeth: 1, stump: 1 };
   const OBSTACLES = [
-    ['pillar', -450, -450], ['pillar', 450, -450], ['pillar', -450, 450], ['pillar', 450, 450],
-    ['crate', -250, 162], ['crate', -294, 206], ['crate', 288, -212], ['crate', -625, -75],
-    ['crate', 625, 188], ['crate', 575, 238], ['crate', -75, -550], ['crate', 112, 562],
-    ['crate', -562, 588], ['crate', 700, -650], ['pillar', 0, -775], ['pillar', 0, 775],
+    ['teeth', -450, -450], ['stump', 450, -450], ['stump', -450, 450], ['teeth', 450, 450],
+    ['nest', -250, 162], ['drums', -294, 206], ['wreck', 288, -212], ['nest', -625, -75],
+    ['wreck', 625, 188], ['drums', 575, 238], ['nest', -75, -550], ['wreck', 112, 562],
+    ['drums', -562, 588], ['nest', 700, -650], ['teeth', 0, -775], ['stump', 0, 775],
   ];
+  // 外周: 長さ 48 の区間を並べる（コンクリ障壁・縞入り・土嚢を 3 区間ずつ切り替え）。四隅に監視塔の残骸。
+  // 外の景色: 当たり判定のない残骸や障害物（一人称視点で地平線までの距離感を出す）
+  const WALLS = [], SCENERY = [];
+  {
+    const n = 38, L = (HALF * 2) / n, o = HALF + 4 * SC;
+    for (let side = 0; side < 4; side++) {
+      for (let i = 0; i < n; i++) {
+        const t = -HALF + (i + 0.5) * L, kind = Math.floor(i / 3) % 3;
+        const [x, y, a] = [[t, -o, 0], [o, t, Math.PI / 2], [-t, o, Math.PI], [-o, -t, -Math.PI / 2]][side];
+        WALLS.push({ model: kind === 2 ? 'sandbags' : 'barrier', frame: kind === 1 ? 1 : 0, x, y, a });
+      }
+    }
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) WALLS.push({ model: 'tower', frame: 0, x: sx * (o + 10), y: sy * (o + 10), a: 0.3 });
+    const kinds = ['wreck', 'teeth', 'stump', 'drums', 'teeth', 'wreck', 'nest', 'stump'];
+    for (let i = 0; i < 26; i++) {
+      const ang = (i / 26) * Math.PI * 2 + (i % 3) * 0.07, r = 1060 + ((i * 37) % 5) * 45;
+      SCENERY.push({ model: kinds[i % kinds.length], x: Math.cos(ang) * r * 1.05, y: Math.sin(ang) * r * 1.05, a: i * 1.3 });
+    }
+  }
 
   function reset() {
     player = {
@@ -105,7 +126,7 @@
       dashDir: 0, inv: 0, walk: 0, hurt: 0, alive: true, strafe: 1, strafeT: 0, rammed: null, recoil: 0,
     };
     enemies = []; bullets = []; particles = []; pickups = []; spawns = [];
-    obstacles = OBSTACLES.map(([m, x, y]) => ({ model: m, x, y, a: m === 'crate' ? rand(-0.4, 0.4) : 0, r: m === 'crate' ? 9.5 * SC : 7 * SC }));
+    obstacles = OBSTACLES.map(([m, x, y]) => ({ model: m, x, y, a: SMALL[m] ? rand(0, 1.5) : rand(-0.4, 0.4) + Math.floor(rand(0, 4)) * Math.PI / 2, r: SMALL[m] ? 7 * SC : 9.5 * SC }));
     wave = 0; kills = 0; queue = []; spawnTimer = 0; intermission = 1.2; banner = null; shake = 0; deadTimer = 0; time = 0;
     cam.x = player.x; cam.y = player.y;
   }
@@ -220,6 +241,10 @@
     for (let i = 0; i < 8 * scale; i++) {
       particles.push({ k: 'smoke', x: x + rand(-12, 12) * scale, y: y + rand(-12, 12) * scale, z: rand(5, 25), vx: rand(-20, 20), vy: rand(-20, 20),
         vz: rand(20, 60), life: rand(0.6, 1.1), max: 1.1, size: rand(8, 16) * scale });
+    }
+    for (let i = 0; i < 7 * scale; i++) {
+      particles.push({ k: 'fire', x: x + rand(-10, 10) * scale, y: y + rand(-10, 10) * scale, z: rand(6, 22), vx: rand(-30, 30), vy: rand(-30, 30),
+        vz: rand(30, 90), life: rand(0.25, 0.5), max: 0.5, size: rand(7, 13) * scale });
     }
     particles.push({ k: 'ring', x, y, z: 0, life: 0.35, max: 0.35, size: 70 * scale });
     particles.push({ k: 'flash', x, y, z: 15, life: 0.12, max: 0.12, size: 40 * scale });
@@ -515,7 +540,7 @@
       if (q.k === 'debris' || q.k === 'spark') {
         q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; q.vz -= 700 * dt;
         if (q.z < 0) { q.z = 0; q.vz *= -0.35; q.vx *= 0.6; q.vy *= 0.6; }
-      } else if (q.k === 'smoke' || q.k === 'steam') {
+      } else if (q.k === 'smoke' || q.k === 'steam' || q.k === 'fire') {
         q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt;
       }
     }
@@ -545,44 +570,12 @@
   }
 
   // ---------------- 描画 ----------------
-  let floorCanvas = null;
-  function buildFloor() {
-    const S = HALF * 2, cv = document.createElement('canvas');
-    cv.width = cv.height = S;
-    const c = cv.getContext('2d'), T = 80;
-    for (let y = 0; y < S; y += T) {
-      for (let x = 0; x < S; x += T) {
-        c.fillStyle = ((x + y) / T) % 2 ? '#1c2130' : '#20263a';
-        c.fillRect(x, y, T, T);
-        c.fillStyle = '#2b3349';
-        c.fillRect(x, y, T, 1); c.fillRect(x, y, 1, T);
-        c.fillStyle = '#323b55';
-        for (const [rx, ry] of [[6, 6], [T - 8, 6], [6, T - 8], [T - 8, T - 8]]) c.fillRect(x + rx, y + ry, 2, 2);
-      }
-    }
-    // 汚れ・焦げ跡
-    for (let i = 0; i < 40; i++) {
-      c.fillStyle = `rgba(0,0,0,${rand(0.04, 0.1)})`;
-      c.beginPath(); c.ellipse(rand(0, S), rand(0, S), rand(10, 50), rand(6, 30), rand(0, 3), 0, Math.PI * 2); c.fill();
-    }
-    // 中央の発進パッド
-    c.strokeStyle = 'rgba(127,246,255,0.18)'; c.lineWidth = 4;
-    c.beginPath(); c.arc(HALF, HALF, 110, 0, Math.PI * 2); c.stroke();
-    c.lineWidth = 1; c.beginPath(); c.arc(HALF, HALF, 125, 0, Math.PI * 2); c.stroke();
-    // 外周の警告ライン
-    c.save();
-    c.beginPath(); c.rect(0, 0, S, S); c.rect(40, 40, S - 80, S - 80); c.clip('evenodd');
-    for (let i = -S; i < S * 2; i += 40) {
-      c.fillStyle = 'rgba(227,178,60,0.22)';
-      c.beginPath(); c.moveTo(i, 0); c.lineTo(i + 20, 0); c.lineTo(i + 20 - S, S); c.lineTo(i - S, S); c.fill();
-    }
-    c.restore();
-    floorCanvas = cv;
-  }
+  // 地面は field.js で作る（1 テクセル = 1 ボクセル = 3）。俯瞰でも一人称でも同じ絵を使う
+  let ground = null;
 
   // 断面を下から 1 枚ずつ、回転 → 縦に k 倍 → 高さぶん持ち上げて描く。1 層の持ち上げ量ぶん同じ断面を重ねて隙間を埋める
   function drawStack(model, sx, sy, ang, lift = 0, alpha = 1) {
-    const sl = model.slices, h = model.size / 2, Z = view.Z * SC, k = view.k;
+    const sl = model.slices, h = (model.size * model.res) / 2, Z = (view.Z * SC) / model.res, k = view.k;
     const c = Math.cos(ang), s = Math.sin(ang), step = up(SC), n = Math.max(1, Math.ceil(step));
     if (alpha < 1) ctx.globalAlpha = alpha;
     for (let i = 0; i < sl.length; i++) {
@@ -604,7 +597,7 @@
     get bullets() { return bullets; }, get particles() { return particles; }, get pickups() { return pickups; },
     get spawns() { return spawns; }, get time() { return time; }, get shake() { return shake; }, get wave() { return wave; },
     get kills() { return kills; }, get best() { return best; }, get switchFx() { return switchFx / 0.35; },
-    scenery: [], HEAT_T: 1.1, Models, assistTarget: (p) => assistTarget(p), frameOf: (n, w) => frameOf(n, w),
+    scenery: WALLS.concat(SCENERY), HEAT_T: 1.1, Models, assistTarget: (p) => assistTarget(p), frameOf: (n, w) => frameOf(n, w),
   };
 
   function draw() {
@@ -615,7 +608,7 @@
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = '#0a0c12';
+    ctx.fillStyle = '#2e2a34';
     ctx.fillRect(0, 0, VW, VH);
 
     const shx = rand(-shake, shake), shy = rand(-shake, shake);
@@ -623,9 +616,8 @@
 
     // 床
     worldTransform();
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(floorCanvas, -HALF, -HALF);
     ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(ground.canvas, -ground.half, -ground.half, ground.half * 2, ground.half * 2);
 
     // 出現予告
     for (const s of spawns) {
@@ -650,38 +642,28 @@
       ctx.beginPath(); ctx.arc(e.x, e.y, e.r + 10 + k * 70, 0, Math.PI * 2); ctx.stroke();
     }
     // 影
-    ctx.fillStyle = 'rgba(0,0,0,0.38)';
-    const shadow = (x, y, r) => { ctx.beginPath(); ctx.arc(x + 3, y + 3, r, 0, Math.PI * 2); ctx.fill(); };
+    // 影: 光は左上から。右下へ伸ばした青紫の楕円
+    ctx.fillStyle = 'rgba(20,14,34,0.45)';
+    const shadow = (x, y, r) => { ctx.beginPath(); ctx.ellipse(x + 7, y + 7, r * 1.15, r * 0.8, Math.PI / 4, 0, Math.PI * 2); ctx.fill(); };
     for (const o of obstacles) shadow(o.x, o.y, o.r + 2);
+    for (const o of SCENERY) shadow(o.x, o.y, 9 * SC);
     for (const e of enemies) shadow(e.x, e.y, e.r);
     if (player.alive) shadow(player.x, player.y, player.r);
     for (const b of bullets) shadow(b.x, b.y, 3);
-
-    // 外周の壁（これも断面の積み重ね）
-    const wallN = Math.ceil(up(WALL));
-    for (let i = 0; i < wallN; i++) {
-      const z = (i / wallN) * WALL, top = i === wallN - 1;
-      worldTransform(z);
-      const f = 0.55 + 0.45 * z / WALL;
-      ctx.fillStyle = top ? '#8590ad' : `rgb(${50 * f | 0},${56 * f | 0},${74 * f | 0})`;
-      const o = HALF + 26;
-      ctx.fillRect(-o, -o, o * 2, 26); ctx.fillRect(-o, HALF, o * 2, 26);
-      ctx.fillRect(-o, -HALF, 26, HALF * 2); ctx.fillRect(HALF, -HALF, 26, HALF * 2);
-      if (top) {
-        ctx.fillStyle = '#e3b23c';
-        ctx.fillRect(-HALF, -HALF - 3, HALF * 2, 3); ctx.fillRect(-HALF, HALF, HALF * 2, 3);
-        ctx.fillRect(-HALF - 3, -HALF, 3, HALF * 2); ctx.fillRect(HALF, -HALF, 3, HALF * 2);
-      }
-    }
 
     // 立体物を画面のY順に並べて描く
     const list = [];
     // 後ろからの視点では、自機より手前（画面の下）にあって自機に重なる障害物を半透明にする
     const [psx, psy] = toScreen(player.x, player.y);
+    const onScreen = (sx, sy) => sx > -120 && sx < VW + 120 && sy > -160 && sy < VH + 160;
+    for (const w of WALLS.concat(SCENERY)) {
+      const [sx, sy] = toScreen(w.x, w.y);
+      if (onScreen(sx, sy)) list.push({ sy, f: () => drawStack(Models.get(w.model, w.frame || 0, false, false, 0, Models.lightOf(w.a)), sx, sy, w.a - cam.a) });
+    }
     for (const o of obstacles) {
       const [sx, sy] = toScreen(o.x, o.y);
       const cover = view.follow && player.alive && sy > psy && sy - psy < up(30 * SC) && Math.abs(sx - psx) < (o.r + player.r) * view.Z;
-      list.push({ sy, f: () => drawStack(Models.get(o.model), sx, sy, o.a - cam.a, 0, cover ? 0.35 : 1) });
+      list.push({ sy, f: () => drawStack(Models.get(o.model, 0, false, false, 0, Models.lightOf(o.a)), sx, sy, o.a - cam.a, 0, cover ? 0.35 : 1) });
     }
     for (const k of pickups) {
       if (k.t < 3 && Math.floor(k.t * 8) % 2) continue;
@@ -693,7 +675,7 @@
       let ox = e.charge > 0 ? Math.sin(time * 60) * 1.5 : 0, oy = 0;
       if (e.type === 'scuttler') { ox += rand(-0.8, 0.8); oy += rand(-0.8, 0.8); }   // 突っ込むときの小刻みな震え
       if (e.recoil) { const k = e.recoil * 3; ox -= Math.cos(e.a - cam.a) * k; oy -= Math.sin(e.a - cam.a) * k; }
-      list.push({ sy, f: () => drawStack(Models.get(e.type, frameOf(e.type, e.walk), e.flash > 0 || (e.charge > 0 && Math.sin(time * 40) > 0)), sx + ox, sy + oy, e.a - cam.a) });
+      list.push({ sy, f: () => drawStack(Models.get(e.type, frameOf(e.type, e.walk), e.flash > 0 || (e.charge > 0 && Math.sin(time * 40) > 0), false, 0, Models.lightOf(e.a)), sx + ox, sy + oy, e.a - cam.a) });
     }
     if (player.alive) {
       const [sx, sy] = toScreen(player.x, player.y);
@@ -701,12 +683,12 @@
       const bob = Math.sin(time * 3) > 0.6 ? 1 : 0;           // 待機中の上下動（1px）
       const rk = player.recoil * 2.5, ra = player.a - cam.a;  // 射撃の反動
       const hot = player.heat > 0 && Math.floor(time * 8) % 2;  // オーバーヒート中は赤く点滅
-      list.push({ sy, f: () => drawStack(Models.get('vanguard', frameOf('vanguard', player.walk), blink, hot), sx - Math.cos(ra) * rk, sy - Math.sin(ra) * rk, ra, bob) });
+      list.push({ sy, f: () => drawStack(Models.get('vanguard', frameOf('vanguard', player.walk), blink, hot, 0, Models.lightOf(player.a)), sx - Math.cos(ra) * rk, sy - Math.sin(ra) * rk, ra, bob) });
     }
     for (const q of particles) {
       if (q.k === 'ghost') {
         const [sx, sy] = toScreen(q.x, q.y);
-        list.push({ sy: sy - 0.1, f: () => drawStack(Models.get('vanguard', 0, true), sx, sy, q.a - cam.a, 0, (q.life / q.max) * 0.35) });
+        list.push({ sy: sy - 0.1, f: () => drawStack(Models.get('vanguard', 0, true, false, 0, Models.lightOf(q.a)), sx, sy, q.a - cam.a, 0, (q.life / q.max) * 0.35) });
       }
     }
     for (const b of bullets) {
@@ -729,6 +711,9 @@
       } else if (q.k === 'smoke') {
         ctx.fillStyle = `rgba(60,58,66,${k * 0.55})`;
         ctx.beginPath(); ctx.arc(sx, sy, q.size * Z * (1.6 - k * 0.6), 0, Math.PI * 2); ctx.fill();
+      } else if (q.k === 'fire') {
+        ctx.fillStyle = `rgba(255,${120 + k * 100 | 0},40,${k * 0.8})`;
+        ctx.beginPath(); ctx.arc(sx, sy, q.size * Z * (0.5 + k * 0.5), 0, Math.PI * 2); ctx.fill();
       } else if (q.k === 'flash') {
         ctx.fillStyle = `rgba(255,240,200,${k})`;
         ctx.beginPath(); ctx.arc(sx, sy, q.size * Z * (0.6 + 0.4 * k), 0, Math.PI * 2); ctx.fill();
@@ -861,8 +846,8 @@
   }
 
   // ---------------- ループ ----------------
-  buildFloor();
-  FPS.setGround(floorCanvas, 1, HALF);
+  ground = Field.ground(HALF);
+  FPS.setGround(ground.canvas, ground.texel, ground.half);
   FPS.setSky(Field.SKY, Field.panorama());
   reset();
   if (DEMO) { $('title').hidden = true; }
