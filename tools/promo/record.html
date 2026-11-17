@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>STACKBOT ARENA — 録画用</title>
+  <!-- 告知動画の録画専用ページ（tools/promo/record.mjs から開く）。ゲーム本体（index.html・src/）は変えず、
+       ここで時計・乱数・Web Audio を差し替えて 1 コマずつ進め、映像と音をずれなく書き出す。 -->
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; image-rendering: pixelated; }
+    .stub { display: none; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <!-- game.js が触る要素（録画では見せない） -->
+  <div class="stub"><div id="title"></div><div id="over"><span id="over-kills"></span><span id="over-wave"></span><span id="over-best"></span></div>
+    <button id="start"></button><button id="retry"></button></div>
+
+  <script>
+  'use strict';
+  (() => {
+    const params = new URLSearchParams(location.search);
+    // 乱数を固定（同じ seed なら同じ動画になる）
+    let s = (+params.get('seed') || 1) >>> 0;
+    Math.random = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    // 仮想の時計: performance.now と requestAnimationFrame を録画側が進める
+    let vt = 0, cb = null;
+    performance.now = () => vt;
+    window.requestAnimationFrame = (f) => { cb = f; return 1; };
+    // Web Audio: 本物の AudioContext の代わりに、全体の長さぶんの OfflineAudioContext を渡す。
+    // currentTime を仮想の時計にするので、音は鳴った瞬間の時刻に置かれ、最後にまとめて書き出せる。
+    const SR = 48000, LEN = +params.get('audioLen') || 120;
+    let octx = null;
+    function FakeAC() {
+      octx = new OfflineAudioContext(2, SR * LEN, SR);
+      Object.defineProperty(octx, 'currentTime', { get: () => vt / 1000 });
+      return octx;
+    }
+    window.AudioContext = window.webkitAudioContext = FakeAC;
+    window.__rec = {
+      step(ms) { vt += ms; const f = cb; cb = null; if (f) f(vt); },
+      get t() { return vt / 1000; },
+      // [t0, t1] 秒の音を 16bit ステレオの PCM（base64）で返す
+      async renderAudio(t0, t1) {
+        if (!octx) return null;
+        const buf = await octx.startRendering();
+        const a = Math.floor(t0 * SR), b = Math.min(buf.length, Math.floor(t1 * SR));
+        const L = buf.getChannelData(0), R = buf.getChannelData(buf.numberOfChannels > 1 ? 1 : 0);
+        const out = new Int16Array((b - a) * 2);
+        for (let i = a, j = 0; i < b; i++) {
+          out[j++] = Math.max(-1, Math.min(1, L[i])) * 32767;
+          out[j++] = Math.max(-1, Math.min(1, R[i])) * 32767;
+        }
+        window.__pcm = new Uint8Array(out.buffer);
+        return window.__pcm.length;
+      },
+      pcmChunk(off, n) {
+        let str = '';
+        const u = window.__pcm.subarray(off, off + n);
+        for (let i = 0; i < u.length; i += 0x8000) str += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+        return btoa(str);
+      },
+    };
+  })();
+  </script>
+  <script src="../../src/models.js"></script>
+  <script src="../../src/field.js"></script>
+  <script src="../../src/fps.js"></script>
+  <script src="../../src/game.js"></script>
+  <script src="director.js"></script>
+</body>
+</html>
