@@ -328,15 +328,15 @@
       if (shoot && p.fireCd <= 0 && p.heat <= 0 && p.dashT <= 0) {
         p.fireCd = 0.11; p.recoil = 1;
         const c = Math.cos(p.a), s = Math.sin(p.a);
-        const mxp = p.x + c * 11 * SC - s * 7.5 * SC, myp = p.y + s * 11 * SC + c * 7.5 * SC;  // 右腕ライフルの銃口
+        const mxp = p.x + c * 12 * SC - s * 7.5 * SC, myp = p.y + s * 12 * SC + c * 7.5 * SC;  // 右腕ライフルの銃口
         // 照準: 機体の正面。正面 ±14° 以内・720 以内の敵がいれば、いちばん近い敵へ弾を吸い付かせる
         let ba = p.a;
         if (!auto) {
           const t = assistTarget(p);
           if (t) ba = Math.atan2(t.y - myp, t.x - mxp);
         }
-        fire('p', mxp, myp, ba + rand(-0.03, 0.03), 900, 1, 9.5 * SC);
-        particles.push({ k: 'flash', x: mxp, y: myp, z: 9.5 * SC, life: 0.05, max: 0.05, size: 12 });
+        fire('p', mxp, myp, ba + rand(-0.03, 0.03), 900, 1, 10.5 * SC);
+        particles.push({ k: 'flash', x: mxp, y: myp, z: 10.5 * SC, life: 0.05, max: 0.05, size: 12 });
         sfx('shoot');
       }
     } else if (mode === 'play') {
@@ -373,7 +373,7 @@
       const T = TYPES[e.type];
       const dx = p.x - e.x, dy = p.y - e.y, d = Math.hypot(dx, dy) || 1, toP = Math.atan2(dy, dx);
       let mvx = 0, mvy = 0;
-      e.flash -= dt; e.cd -= dt;
+      e.flash -= dt; e.cd -= dt; e.recoil = Math.max(0, (e.recoil || 0) - dt * 6);
       if (e.type === 'scuttler') {
         const wob = Math.sin(time * 5 + e.wob) * 0.6;
         mvx = Math.cos(toP + wob); mvy = Math.sin(toP + wob);
@@ -384,8 +384,9 @@
         mvx = Math.cos(toP) * radial + Math.cos(toP + Math.PI / 2) * e.strafe * 0.7;
         mvy = Math.sin(toP) * radial + Math.sin(toP + Math.PI / 2) * e.strafe * 0.7;
         e.a += angDiff(e.a, toP) * Math.min(1, dt * 4);
+        if (e.cd < 0.16 && e.cd > 0 && d < 720 && p.alive) e.flash = Math.max(e.flash, 0.02); // 撃つ直前に光る
         if (e.cd <= 0 && d < 720 && p.alive) {
-          e.cd = rand(1.5, 2.3);
+          e.cd = rand(1.5, 2.3); e.recoil = 1;
           const c = Math.cos(e.a), s = Math.sin(e.a);
           for (const side of [-3 * SC, 3 * SC]) fire('e', e.x + c * 11 * SC - s * side, e.y + s * 11 * SC + c * side, e.a, 340, T.dmg, 10 * SC, 'orb');
           sfx('eshoot');
@@ -579,6 +580,13 @@
       ctx.strokeStyle = `rgba(255,220,180,${(1 - k) * 0.7})`; ctx.lineWidth = 4 * (1 - k) + 1;
       ctx.beginPath(); ctx.arc(q.x, q.y, q.size * k, 0, Math.PI * 2); ctx.stroke();
     }
+    // COLOSSUS の溜め: 足元に縮んでいく桃色の輪（全方位の弾が来る合図）
+    for (const e of enemies) {
+      if (!(e.charge > 0)) continue;
+      const k = e.charge / 0.7;
+      ctx.strokeStyle = `rgba(255,79,216,${0.9 - k * 0.5})`; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(e.x, e.y, e.r + 10 + k * 70, 0, Math.PI * 2); ctx.stroke();
+    }
     // 影
     ctx.fillStyle = 'rgba(0,0,0,0.38)';
     const shadow = (x, y, r) => { ctx.beginPath(); ctx.arc(x + 3, y + 3, r, 0, Math.PI * 2); ctx.fill(); };
@@ -612,13 +620,18 @@
     }
     for (const e of enemies) {
       const [sx, sy] = toScreen(e.x, e.y);
-      const lift = e.charge > 0 ? Math.sin(time * 60) * 1.5 : 0;
-      list.push({ sy, f: () => drawStack(Models.get(e.type, frameOf(e.type, e.walk), e.flash > 0 || (e.charge > 0 && Math.sin(time * 40) > 0)), sx + lift, sy, e.a - cam.a) });
+      let ox = e.charge > 0 ? Math.sin(time * 60) * 1.5 : 0, oy = 0;
+      if (e.type === 'scuttler') { ox += rand(-0.8, 0.8); oy += rand(-0.8, 0.8); }   // 突っ込むときの小刻みな震え
+      if (e.recoil) { const k = e.recoil * 3; ox -= Math.cos(e.a - cam.a) * k; oy -= Math.sin(e.a - cam.a) * k; }
+      list.push({ sy, f: () => drawStack(Models.get(e.type, frameOf(e.type, e.walk), e.flash > 0 || (e.charge > 0 && Math.sin(time * 40) > 0)), sx + ox, sy + oy, e.a - cam.a) });
     }
     if (player.alive) {
       const [sx, sy] = toScreen(player.x, player.y);
       const blink = player.inv > 0 && player.dashT <= 0 && Math.floor(time * 20) % 2;
-      list.push({ sy, f: () => drawStack(Models.get('vanguard', frameOf('vanguard', player.walk), blink), sx, sy, player.a - cam.a) });
+      const bob = Math.sin(time * 3) > 0.6 ? 1 : 0;           // 待機中の上下動（1px）
+      const rk = player.recoil * 2.5, ra = player.a - cam.a;  // 射撃の反動
+      const hot = player.heat > 0 && Math.floor(time * 8) % 2;  // オーバーヒート中は赤く点滅
+      list.push({ sy, f: () => drawStack(Models.get('vanguard', frameOf('vanguard', player.walk), blink, hot), sx - Math.cos(ra) * rk, sy - Math.sin(ra) * rk, ra, bob) });
     }
     for (const q of particles) {
       if (q.k === 'ghost') {

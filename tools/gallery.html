@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Robot Gallery</title>
+  <style>
+    html, body { margin: 0; background: #1c2130; color: #9fb3c8; font: 13px ui-monospace, Menlo, monospace; }
+    canvas { display: block; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+  <!-- モデルの見た目確認用。別の版の models.js と比べたいときは ?src=パス で差し替える -->
+  <canvas id="c"></canvas>
+  <script>
+    const src = new URLSearchParams(location.search).get('src') || '../src/models.js';
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = draw;
+    document.body.appendChild(s);
+    function draw() {
+      const SC = 3, Z = 2;
+      const names = ['vanguard', 'scuttler', 'warden', 'colossus'];
+      const angles = [-Math.PI / 2, -Math.PI / 4, 0, Math.PI * 0.75];
+      const cw = 190, ch = 260;
+      const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+      cv.width = cw * angles.length + 40; cv.height = ch * names.length + 20;
+      ctx.fillStyle = '#1c2130'; ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.imageSmoothingEnabled = false;
+      names.forEach((n, row) => {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.fillStyle = '#9fb3c8'; ctx.fillText(n.toUpperCase(), 10, row * ch + 20);
+        angles.forEach((a, col) => {
+          const m = Models.get(n, 1), h = m.size / 2, sx = 40 + col * cw + cw / 2, sy = row * ch + ch * 0.72;
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.fillStyle = 'rgba(0,0,0,0.38)';
+          ctx.beginPath(); ctx.ellipse(sx + 4, sy + 4, h * SC * Z * 0.75, h * SC * Z * 0.75, 0, 0, Math.PI * 2); ctx.fill();
+          const c = Math.cos(a) * SC * Z, s = Math.sin(a) * SC * Z;
+          m.slices.forEach((img, i) => {
+            if (!img) return;
+            for (let k = 0; k < SC * Z; k++) {
+              ctx.setTransform(c, s, -s, c, sx, sy - (i * SC * Z + k));
+              ctx.drawImage(img, -h, -h);
+            }
+          });
+        });
+      });
+      document.title = 'ready';
+    }
+  </script>
+</body>
+</html>
