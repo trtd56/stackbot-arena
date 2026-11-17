@@ -25,43 +25,150 @@
   let best = 0;
   try { best = +localStorage.getItem('stackbot-best') || 0; } catch (e) { /* 保存できない環境 */ }
 
-  // ---------------- 音（WebAudioで合成） ----------------
-  let actx = null, muted = false, noiseBuf = null;
+  // ---------------- 音（WebAudio で合成。外部の音源なし） ----------------
+  // 重く無骨にするための部品: 低い音の急降下（胴鳴り）、歪み（WaveShaper）、ノイズの破裂（帯域を絞る）、
+  // 手続きで作った残響（減衰するノイズのインパルス応答）、全体を締めるコンプレッサー。
+  let actx = null, muted = false, noiseBuf = null, master = null, verbIn = null, curves = {};
   function initAudio() {
     if (actx) return;
-    try {
-      actx = new (window.AudioContext || window.webkitAudioContext)();
-      noiseBuf = actx.createBuffer(1, actx.sampleRate * 0.5, actx.sampleRate);
+    try { setupAudio(new (window.AudioContext || window.webkitAudioContext)()); } catch (e) { actx = null; }
+  }
+  function setupAudio(c) {
+    {
+      actx = c;
+      const sr = actx.sampleRate;
+      noiseBuf = actx.createBuffer(1, sr * 2, sr);
       const d = noiseBuf.getChannelData(0);
       for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    } catch (e) { actx = null; }
+      const comp = actx.createDynamicsCompressor();
+      comp.threshold.value = -16; comp.knee.value = 6; comp.ratio.value = 5; comp.attack.value = 0.002; comp.release.value = 0.2;
+      master = actx.createGain(); master.gain.value = 0.85;
+      master.connect(comp).connect(actx.destination);
+      // 残響: 2.4 秒、低域寄りに減衰するノイズ（屋外の広い反響）
+      const ir = actx.createBuffer(2, sr * 2.4, sr);
+      for (let ch = 0; ch < 2; ch++) {
+        const o = ir.getChannelData(ch);
+        let lp = 0;
+        for (let i = 0; i < o.length; i++) { const t = i / o.length; lp += (Math.random() * 2 - 1 - lp) * (0.5 - t * 0.42); o[i] = lp * Math.pow(1 - t, 3.2); }
+      }
+      const verb = actx.createConvolver(); verb.buffer = ir;
+      verbIn = actx.createGain(); verbIn.gain.value = 0.6;
+      verbIn.connect(verb).connect(master);
+    }
   }
-  function tone(type, f0, f1, dur, vol) {
-    const t = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
-    o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
-    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g).connect(actx.destination); o.start(t); o.stop(t + dur);
+  // __stack.sfxTest()（?debug のとき）: 全部の音を OfflineAudioContext に書き出し、ピーク・鳴っている長さ・200Hz 未満の割合を表にする（ヘッドレスでの確認用）
+  async function sfxTest() {
+    const out = {};
+    for (const name of ['shoot', 'eshoot', 'hit', 'boom', 'hurt', 'dash', 'vent', 'ready', 'pickup', 'slam', 'wave', 'step']) {
+      const sr = 44100, off = new OfflineAudioContext(1, sr * 3, sr);
+      actx = null; curves = {}; setupAudio(off);
+      sfx(name);
+      const d = (await off.startRendering()).getChannelData(0);
+      let peak = 0, all = 0, low = 0, lp = 0, last = 0;
+      for (let i = 0; i < d.length; i++) {
+        const v = d[i]; peak = Math.max(peak, Math.abs(v)); all += v * v;
+        lp += (v - lp) * (2 * Math.PI * 200 / sr); low += lp * lp;
+        if (Math.abs(v) > 0.01) last = i;
+      }
+      out[name] = { peak: +peak.toFixed(2), ms: Math.round(last / sr * 1000), low: +(low / (all || 1)).toFixed(2) };
+    }
+    actx = null;
+    return out;
   }
-  function noise(dur, vol, freq) {
-    const t = actx.currentTime, s = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
-    s.buffer = noiseBuf; f.type = 'lowpass'; f.frequency.value = freq;
-    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    s.connect(f).connect(g).connect(actx.destination); s.start(t); s.stop(t + dur);
+  function curve(k) {
+    if (curves[k]) return curves[k];
+    const n = 1024, c = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const x = (i / (n - 1)) * 2 - 1; c[i] = ((1 + k) * x) / (1 + k * Math.abs(x)); }
+    return (curves[k] = c);
   }
+  // 1 つの音: 発音体 → (歪み) → (フィルタ) → 音量の包絡 → 出力と残響へ
+  function voice(src, { dur, vol, at = 0, attack = 0.002, dist = 0, filter, f0, f1, q = 0.8, wet = 0.15 }) {
+    const t = actx.currentTime + at;
+    let node = src;
+    if (dist) { const w = actx.createWaveShaper(); w.curve = curve(dist); w.oversample = '4x'; node.connect(w); node = w; }
+    if (filter) {
+      const f = actx.createBiquadFilter(); f.type = filter; f.Q.value = q;
+      f.frequency.setValueAtTime(f0, t);
+      if (f1) f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+      node.connect(f); node = f;
+    }
+    const g = actx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    node.connect(g); g.connect(master);
+    if (wet) { const s = actx.createGain(); s.gain.value = wet; g.connect(s).connect(verbIn); }
+    // ノイズは毎回違う所から鳴らす（同じノイズの繰り返しに聞こえないように）
+    if (src.buffer) src.start(t, Math.random() * 1.5); else src.start(t);
+    src.stop(t + dur + 0.05);
+  }
+  function osc(type, p0, p1, o) {
+    const s = actx.createOscillator(), t = actx.currentTime + (o.at || 0);
+    s.type = type; s.frequency.setValueAtTime(p0, t); s.frequency.exponentialRampToValueAtTime(p1, t + (o.bend || o.dur));
+    voice(s, o);
+  }
+  function nz(o) {
+    const s = actx.createBufferSource(); s.buffer = noiseBuf; s.loop = true;
+    voice(s, o);
+  }
+  const jit = (v, k = 0.06) => v * (1 + (Math.random() * 2 - 1) * k);
   function sfx(name) {
     if (!actx || muted || mode === 'title' || DEMO) return;
     switch (name) {
-      case 'shoot': tone('square', 900, 420, 0.06, 0.025); break;
-      case 'eshoot': tone('sawtooth', 300, 160, 0.12, 0.03); break;
-      case 'hit': noise(0.05, 0.08, 3000); break;
-      case 'boom': noise(0.45, 0.25, 900); tone('sine', 120, 40, 0.4, 0.2); break;
-      case 'hurt': tone('sawtooth', 220, 70, 0.25, 0.08); break;
-      case 'dash': noise(0.18, 0.09, 6000); tone('sawtooth', 160, 520, 0.16, 0.05); break;
-      case 'vent': noise(0.6, 0.05, 1800); break;
-      case 'ready': tone('sine', 700, 1050, 0.08, 0.04); break;
-      case 'pickup': tone('sine', 500, 1200, 0.2, 0.08); break;
-      case 'slam': noise(0.5, 0.2, 400); break;
-      case 'wave': tone('triangle', 440, 880, 0.3, 0.06); break;
+      case 'shoot': // 機関砲: 乾いた破裂 + 低い胴鳴り + 短い残響
+        nz({ dur: 0.07, vol: 0.32, filter: 'bandpass', f0: jit(1600), f1: 500, q: 0.7, dist: 30, wet: 0.35 });
+        osc('sine', jit(150), 42, { dur: 0.16, vol: 0.55, dist: 6, wet: 0.2 });
+        osc('square', jit(85), 50, { dur: 0.06, vol: 0.12, filter: 'lowpass', f0: 900, dist: 20, wet: 0 });
+        break;
+      case 'eshoot': // 敵の砲: より低く、長い尾
+        osc('sine', jit(95), 30, { dur: 0.3, vol: 0.45, dist: 8, wet: 0.25 });
+        nz({ dur: 0.28, vol: 0.28, filter: 'lowpass', f0: 1400, f1: 250, dist: 12, wet: 0.3 });
+        break;
+      case 'hit': // 装甲に当たる金属音: 短いノイズ + 不協和な金属の鳴り
+        nz({ dur: 0.05, vol: 0.2, filter: 'highpass', f0: 2200, dist: 8, wet: 0.1 });
+        for (const f of [jit(523, 0.1), jit(1187, 0.1)]) osc('square', f, f * 0.94, { dur: 0.09, vol: 0.035, filter: 'bandpass', f0: f * 2, q: 4, wet: 0.15 });
+        osc('sine', jit(220), 90, { dur: 0.06, vol: 0.18, dist: 4, wet: 0 });
+        break;
+      case 'boom': // 爆発: 歪んだ低音の轟き + 閉じていくノイズ + ぱちぱちと散る破片 + 長い残響
+        osc('sine', jit(80), 22, { dur: 1.1, vol: 0.9, dist: 10, wet: 0.35, attack: 0.004 });
+        nz({ dur: 1.3, vol: 0.55, filter: 'lowpass', f0: 2600, f1: 120, dist: 25, wet: 0.5, attack: 0.003 });
+        nz({ dur: 0.12, vol: 0.4, filter: 'bandpass', f0: 900, q: 0.5, dist: 40, wet: 0.2 });
+        for (let i = 0; i < 6; i++) nz({ at: 0.08 + Math.random() * 0.5, dur: 0.03, vol: 0.12, filter: 'highpass', f0: 1800, dist: 20, wet: 0.3 });
+        break;
+      case 'hurt': // 被弾: 機体を叩く鈍い衝撃 + 歪んだ警報の一声
+        osc('sawtooth', 120, 38, { dur: 0.3, vol: 0.4, filter: 'lowpass', f0: 700, dist: 20, wet: 0.2 });
+        nz({ dur: 0.16, vol: 0.35, filter: 'lowpass', f0: 1800, f1: 300, dist: 30, wet: 0.15 });
+        osc('square', 380, 380, { at: 0.05, dur: 0.18, vol: 0.05, filter: 'bandpass', f0: 800, q: 2, dist: 5, wet: 0.1 });
+        break;
+      case 'dash': // 突撃: 噴射の轟音（帯域が上がっていくノイズ）+ 低い唸り + 踏み切りの衝撃
+        osc('sine', 110, 40, { dur: 0.16, vol: 0.6, dist: 8, wet: 0.1 });
+        nz({ dur: 0.38, vol: 0.4, filter: 'bandpass', f0: 280, f1: 2400, q: 0.9, dist: 18, wet: 0.25, attack: 0.02 });
+        osc('sawtooth', 55, 110, { dur: 0.32, vol: 0.18, filter: 'lowpass', f0: 600, dist: 25, wet: 0.15 });
+        break;
+      case 'vent': // オーバーヒート: 金属のきしみ + 蒸気の噴出
+        osc('square', 70, 60, { dur: 0.12, vol: 0.2, filter: 'lowpass', f0: 500, dist: 10, wet: 0.1 });
+        nz({ at: 0.05, dur: 0.9, vol: 0.07, filter: 'highpass', f0: 3200, f1: 1500, attack: 0.03, wet: 0.2 });
+        break;
+      case 'ready': // 復帰: 機械の 2 回のかちり
+        for (const at of [0, 0.07]) nz({ at, dur: 0.025, vol: 0.25, filter: 'bandpass', f0: 2600, q: 3, dist: 10, wet: 0.05 });
+        osc('sine', 160, 120, { at: 0.07, dur: 0.08, vol: 0.2, wet: 0 });
+        break;
+      case 'pickup': // 修理: 工具の締め付け音
+        osc('square', 180, 360, { dur: 0.22, vol: 0.06, filter: 'lowpass', f0: 1200, dist: 6, wet: 0.1 });
+        nz({ at: 0.18, dur: 0.04, vol: 0.15, filter: 'bandpass', f0: 3000, q: 3, wet: 0.05 });
+        break;
+      case 'slam': // COLOSSUS の全方位弾: 地面を叩く重い衝撃
+        osc('sine', 60, 18, { dur: 1.2, vol: 0.9, dist: 12, wet: 0.4 });
+        nz({ dur: 0.9, vol: 0.5, filter: 'lowpass', f0: 700, f1: 80, dist: 20, wet: 0.45 });
+        break;
+      case 'wave': // ウェーブ開始: 歪んだ警報（2 音のずれたうなり）
+        for (const f of [196, 207]) osc('sawtooth', f, f, { dur: 0.9, vol: 0.06, filter: 'lowpass', f0: 1100, dist: 8, wet: 0.3, attack: 0.05 });
+        for (const f of [196, 207]) osc('sawtooth', f * 0.75, f * 0.75, { at: 0.45, dur: 0.8, vol: 0.05, filter: 'lowpass', f0: 900, dist: 8, wet: 0.3, attack: 0.05 });
+        break;
+      case 'step': // 自機の足音: 重い金属の着地
+        osc('sine', jit(70), 35, { dur: 0.16, vol: 0.22, dist: 3, wet: 0.05 });
+        nz({ dur: 0.05, vol: 0.06, filter: 'lowpass', f0: 600, wet: 0 });
+        break;
     }
   }
 
@@ -381,7 +488,9 @@
         if (p.dashT <= 0) { p.heat = HEAT_T; sfx('vent'); }
       } else if (ml > 0) {
         const sp = p.heat > 0 ? 150 : 270;
+        const w0 = p.walk;
         p.x += mx * sp * dt; p.y += my * sp * dt; p.walk += dt * (p.heat > 0 ? 5 : 9);
+        if (Math.floor(w0 / 2) !== Math.floor(p.walk / 2)) sfx('step');   // 2 コマごとに 1 歩
       }
       if (p.heat > 0) {
         p.heat -= dt;
@@ -865,7 +974,7 @@
   if (params.has('debug')) {
     window.__stack = { get player() { return player; }, get enemies() { return enemies; }, get mode() { return mode; },
       get kills() { return kills; }, get wave() { return wave; }, get bullets() { return bullets; }, cam, VIEWS, view, get viewIdx() { return viewIdx; },
-      spawn(type, dx, dy) { enemies.push(makeEnemy(type, player.x + dx, player.y + dy)); } };
+      spawn(type, dx, dy) { enemies.push(makeEnemy(type, player.x + dx, player.y + dy)); }, sfxTest };
   }
   const warp = +params.get('warp') || 0;
   for (let i = 0; i < warp * 60; i++) update(1 / 60);
